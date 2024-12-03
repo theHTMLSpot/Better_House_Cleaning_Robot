@@ -3,9 +3,6 @@
 #include <Wire.h>
 #include <TFT_eSPI.h>
 #include <ESP32SPISlave.h>
-#include <FS.h>
-#include <SD.h>
-#include <SPI.h>
 
 // Define motor pins
 #define LEFT_MOTOR_FWD 9
@@ -17,7 +14,7 @@
 #define TRIG_PIN 12
 #define ECHO_PIN 11
 
-// Servo pins
+// Servo pins for the robot arm
 #define BASE_SERVO_PIN 3
 #define BOTTOM_SERVO_PIN 5
 #define MIDDLE_SERVO_PIN 4
@@ -32,7 +29,7 @@
 // Bluetooth Serial
 BluetoothSerial SerialBT;
 
-// Servo objects
+// Servo objects for the arm
 Servo baseServo;
 Servo bottomServo;
 Servo middleServo;
@@ -48,15 +45,6 @@ float batteryVoltage = 0.0;
 int gridSize = 5;  // Assume a 5x5 grid
 int robotX = 0, robotY = 0;  // Robot's current position (start at origin)
 
-// Coordinates for trash items
-struct Trash {
-  int x;
-  int y;
-};
-
-// List of trash locations (for example)
-Trash trashList[] = {{1, 2}, {3, 4}, {0, 3}};
-
 // Function to get distance from ultrasonic sensor
 long getDistance() {
   digitalWrite(TRIG_PIN, LOW);
@@ -70,7 +58,7 @@ long getDistance() {
   return distance;
 }
 
-// Function to read battery voltage (using analog pin)
+// Function to read battery voltage
 float readBattery() {
   int rawValue = analogRead(BATTERY_PIN); // Read raw value from battery pin
   float voltage = (rawValue / 4095.0) * 3.3 * 2; // Convert raw value to voltage (adjust multiplier if necessary)
@@ -135,16 +123,7 @@ void sendMovementToServer() {
   Serial.println("Movement Sent: " + movementHistory);
 }
 
-// Function to reset the robotic arm
-void resetArm() {
-  baseServo.write(90);
-  bottomServo.write(90);
-  middleServo.write(90);
-  clawServo.write(90); // Open claw
-  delay(1000);
-}
-
-// Function to retrace the steps
+// Function to retrace the steps (when battery is low)
 void retraceSteps() {
   Serial.println("Battery low. Retracing steps...");
   if (movementHistory.indexOf("move_forward") != -1) {
@@ -154,22 +133,42 @@ void retraceSteps() {
   }
 }
 
-// Function to send image data to the server
-void sendImageToServer() {
-  // You can use a camera connected to the ESP32 or any other compatible camera.
-  // Here we are assuming that we have access to a camera frame (as a buffer or as a file).
+// Function to check if the robot is near charger using image recognition (camera)
+void checkForCharger() {
+  // Image recognition logic to locate charger with the word "charge" and a lightning bolt.
+}
+
+// Function to move the robot to a specific grid coordinate (x, y)
+void moveToCoordinate(int targetX, int targetY) {
+  Serial.print("Moving to coordinates: ");
+  Serial.print(targetX);
+  Serial.print(", ");
+  Serial.println(targetY);
   
-  // Example: Send a captured image to the server
-  File imgFile = SD.open("/capture.jpg");  // Or use a camera library to get the image
-  if (imgFile) {
-    while (imgFile.available()) {
-      SerialBT.write(imgFile.read());  // Send byte-by-byte over Bluetooth
-    }
-    imgFile.close();
-    Serial.println("Image sent to server.");
-  } else {
-    Serial.println("Error opening image file.");
+  // Move in X direction
+  while (robotX < targetX) {
+    moveForward();
+    robotX++;
   }
+  while (robotX > targetX) {
+    turnLeft();  // Assuming turns change direction in a 2D grid
+    moveForward();
+    robotX--;
+  }
+
+  // Move in Y direction
+  while (robotY < targetY) {
+    moveForward();
+    robotY++;
+  }
+  while (robotY > targetY) {
+    turnLeft();  // Assuming turns change direction in a 2D grid
+    moveForward();
+    robotY--;
+  }
+
+  stopMotors();
+  Serial.println("Arrived at target coordinates.");
 }
 
 void setup() {
@@ -193,27 +192,32 @@ void setup() {
 
   SerialBT.begin("ESP32_Robot");
   Serial.println("Bluetooth Started");
-
-  // Initialize SD card (if using one for storing images)
-  if (!SD.begin()) {
-    Serial.println("SD card initialization failed!");
-  } else {
-    Serial.println("SD card initialized.");
-  }
 }
 
 void loop() {
   batteryVoltage = readBattery();
   Serial.println("Battery Voltage: " + String(batteryVoltage));
 
+  // If battery is low, retrace steps
   if (batteryVoltage < 3.0) {
     retraceSteps();
+  } else {
+    // If battery is above 10%, move normally based on distance sensor
+    long distance = getDistance();
+    Serial.print("Distance: ");
+    Serial.print(distance);
+    Serial.println(" cm");
+
+    if (distance < 20) {
+      stopMotors();
+      delay(500);
+      turnLeft();
+    } else {
+      moveForward();
+    }
   }
 
-  // Send image frame to server (every loop or on specific events like object detection)
-  sendImageToServer();  // Adjust timing for when you want to send images (e.g., periodically)
-
-  // Logic for movement and task execution
+  // Check for trash items and move to their coordinates
   for (int i = 0; i < sizeof(trashList) / sizeof(trashList[0]); i++) {
     Trash trash = trashList[i];
     moveToCoordinate(trash.x, trash.y);
@@ -227,18 +231,7 @@ void loop() {
     resetArm();  // Reset arm to neutral position
   }
 
-  long distance = getDistance();
-  Serial.print("Distance: ");
-  Serial.print(distance);
-  Serial.println(" cm");
-
-  if (distance < 20) {
-    stopMotors();
-    delay(500);
-    turnLeft();
-  } else {
-    moveForward();
-  }
+  checkForCharger(); // Check if charger is nearby
 
   delay(100);
 }
