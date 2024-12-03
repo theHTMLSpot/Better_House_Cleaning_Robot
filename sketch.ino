@@ -13,10 +13,14 @@
 // Servo pins
 #define BASE_SERVO_PIN 3
 #define BOTTOM_SERVO_PIN 5
+#define MIDDLE_SERVO_PIN 4
+#define CLAW_SERVO_PIN 2
 
 // Servo objects
 Servo baseServo;
 Servo bottomServo;
+Servo middleServo;
+Servo clawServo;
 
 // Function to get distance from ultrasonic sensor
 long getDistance() {
@@ -59,6 +63,36 @@ void turnLeft() {
   delay(500); // Adjust time for desired turn angle
 }
 
+// Function to control the robotic arm
+void moveArmTo(int baseAngle, int bottomAngle) {
+  baseServo.write(baseAngle);
+  delay(500);
+  bottomServo.write(bottomAngle);
+  delay(500);
+}
+
+// Function to open/close the claw
+void controlClaw(bool open) {
+  if (open) {
+    Serial.println("Opening claw");
+    clawServo.write(90); // Adjust based on your claw mechanism
+  } else {
+    Serial.println("Closing claw");
+    clawServo.write(30); // Adjust based on your claw mechanism
+  }
+  delay(500);
+}
+
+// Function to reset the robotic arm
+void resetArm() {
+  Serial.println("Resetting arm");
+  baseServo.write(90);
+  bottomServo.write(90);
+  middleServo.write(90);
+  clawServo.write(90); // Open claw
+  delay(1000);
+}
+
 // Main setup function
 void setup() {
   // Set motor pins as outputs
@@ -74,10 +108,11 @@ void setup() {
   // Attach servos
   baseServo.attach(BASE_SERVO_PIN);
   bottomServo.attach(BOTTOM_SERVO_PIN);
+  middleServo.attach(MIDDLE_SERVO_PIN);
+  clawServo.attach(CLAW_SERVO_PIN);
 
   // Initialize servo positions
-  baseServo.write(90);
-  bottomServo.write(90);
+  resetArm();
 
   // Start the serial monitor
   Serial.begin(9600);
@@ -102,6 +137,32 @@ void loop() {
     turnLeft();
   } else {
     moveForward(); // Otherwise, keep moving forward
+  }
+
+  // Check for commands from the USB camera (via serial)
+  if (Serial.available() > 0) {
+    String data = Serial.readStringUntil('\n'); // Read coordinates
+    int commaIndex = data.indexOf(',');
+    int gridX = data.substring(0, commaIndex).toInt();
+    int gridY = data.substring(commaIndex + 1).toInt();
+
+    Serial.print("Received Grid: ");
+    Serial.print(gridX);
+    Serial.print(", ");
+    Serial.println(gridY);
+
+    // Map coordinates to servo angles
+    int baseAngle = map(gridX, 0, 10, 0, 180);    // Adjust based on grid size
+    int bottomAngle = map(gridY, 0, 10, 90, 45);  // Adjust based on height range
+
+    // Move the arm to the trash location
+    moveArmTo(baseAngle, bottomAngle);
+
+    // Grab the object
+    controlClaw(false);
+
+    // Reset arm after grabbing
+    resetArm();
   }
 
   delay(100); // Add a small delay to stabilize
