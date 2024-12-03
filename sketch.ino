@@ -1,4 +1,8 @@
+#include <BluetoothSerial.h>
 #include <Servo.h>
+#include <Wire.h>
+#include <TFT_eSPI.h>
+#include <ESP32SPISlave.h>
 
 // Define motor pins
 #define LEFT_MOTOR_FWD 9
@@ -16,8 +20,14 @@
 #define MIDDLE_SERVO_PIN 4
 #define CLAW_SERVO_PIN 2
 
-// Battery voltage pin
-#define BATTERY_PIN A0
+// Battery pin (Voltage measurement)
+#define BATTERY_PIN 34
+
+// Red LED pin (for movement or low battery)
+#define RED_LED_PIN 9
+
+// Bluetooth Serial
+BluetoothSerial SerialBT;
 
 // Servo objects
 Servo baseServo;
@@ -25,13 +35,24 @@ Servo bottomServo;
 Servo middleServo;
 Servo clawServo;
 
-// Variables for tracking steps
-long stepCount = 0;
-int motorSpeed = 150; // Default motor speed (0-255)
+// Movement tracking list (Store moves as strings)
+String movementHistory = "";
 
-// Variables for battery monitoring
-float batteryVoltage = 0;
-float batteryPercentage = 0;
+// Battery level
+float batteryVoltage = 0.0;
+
+// Imaginary grid size and robot position
+int gridSize = 5;  // Assume a 5x5 grid
+int robotX = 0, robotY = 0;  // Robot's current position (start at origin)
+
+// Coordinates for trash items
+struct Trash {
+  int x;
+  int y;
+};
+
+// List of trash locations (for example)
+Trash trashList[] = {{1, 2}, {3, 4}, {0, 3}};
 
 // Function to get distance from ultrasonic sensor
 long getDistance() {
@@ -46,35 +67,45 @@ long getDistance() {
   return distance;
 }
 
+// Function to read battery voltage (using analog pin)
+float readBattery() {
+  int rawValue = analogRead(BATTERY_PIN); // Read raw value from battery pin
+  float voltage = (rawValue / 4095.0) * 3.3 * 2; // Convert raw value to voltage (adjust multiplier if necessary)
+  return voltage;
+}
+
 // Function to move the robot forward
 void moveForward() {
-  Serial.println("Moving forward");
-  analogWrite(LEFT_MOTOR_FWD, motorSpeed);
-  analogWrite(LEFT_MOTOR_BWD, 0);
-  analogWrite(RIGHT_MOTOR_FWD, motorSpeed);
-  analogWrite(RIGHT_MOTOR_BWD, 0);
-
-  // Increment step count
-  stepCount++;
+  digitalWrite(RED_LED_PIN, HIGH);  // Turn on red LED when moving
+  digitalWrite(LEFT_MOTOR_FWD, HIGH);
+  digitalWrite(LEFT_MOTOR_BWD, LOW);
+  digitalWrite(RIGHT_MOTOR_FWD, HIGH);
+  digitalWrite(RIGHT_MOTOR_BWD, LOW);
+  movementHistory += "move_forward;";
+  sendMovementToServer();
 }
 
 // Function to stop the robot
 void stopMotors() {
-  Serial.println("Stopping");
-  analogWrite(LEFT_MOTOR_FWD, 0);
-  analogWrite(LEFT_MOTOR_BWD, 0);
-  analogWrite(RIGHT_MOTOR_FWD, 0);
-  analogWrite(RIGHT_MOTOR_BWD, 0);
+  digitalWrite(RED_LED_PIN, LOW);  // Turn off red LED when stopped
+  digitalWrite(LEFT_MOTOR_FWD, LOW);
+  digitalWrite(LEFT_MOTOR_BWD, LOW);
+  digitalWrite(RIGHT_MOTOR_FWD, LOW);
+  digitalWrite(RIGHT_MOTOR_BWD, LOW);
+  movementHistory += "stop;";
+  sendMovementToServer();
 }
 
 // Function to turn the robot left
 void turnLeft() {
-  Serial.println("Turning left");
-  analogWrite(LEFT_MOTOR_FWD, 0);
-  analogWrite(LEFT_MOTOR_BWD, motorSpeed);
-  analogWrite(RIGHT_MOTOR_FWD, motorSpeed);
-  analogWrite(RIGHT_MOTOR_BWD, 0);
-  delay(500); // Adjust time for desired turn angle
+  digitalWrite(RED_LED_PIN, HIGH);  // Turn on red LED when moving
+  digitalWrite(LEFT_MOTOR_FWD, LOW);
+  digitalWrite(LEFT_MOTOR_BWD, HIGH);
+  digitalWrite(RIGHT_MOTOR_FWD, HIGH);
+  digitalWrite(RIGHT_MOTOR_BWD, LOW);
+  delay(500);
+  movementHistory += "turn_left;";
+  sendMovementToServer();
 }
 
 // Function to control the robotic arm
@@ -88,18 +119,21 @@ void moveArmTo(int baseAngle, int bottomAngle) {
 // Function to open/close the claw
 void controlClaw(bool open) {
   if (open) {
-    Serial.println("Opening claw");
-    clawServo.write(90); // Adjust based on your claw mechanism
+    clawServo.write(90);
   } else {
-    Serial.println("Closing claw");
-    clawServo.write(30); // Adjust based on your claw mechanism
+    clawServo.write(30);
   }
   delay(500);
 }
 
+// Function to send movement data to the server (Bluetooth)
+void sendMovementToServer() {
+  SerialBT.print(movementHistory);
+  Serial.println("Movement Sent: " + movementHistory);
+}
+
 // Function to reset the robotic arm
 void resetArm() {
-  Serial.println("Resetting arm");
   baseServo.write(90);
   bottomServo.write(90);
   middleServo.write(90);
@@ -107,101 +141,113 @@ void resetArm() {
   delay(1000);
 }
 
-// Function to read battery percentage
-void updateBatteryPercentage() {
-  int sensorValue = analogRead(BATTERY_PIN);
-  batteryVoltage = sensorValue * (5.0 / 1023.0) * 2; // Adjust for voltage divider
-  batteryPercentage = map(batteryVoltage, 6.0, 8.4, 0, 100); // 2S LiPo range (6V-8.4V)
-
-  // Constrain to valid range
-  batteryPercentage = constrain(batteryPercentage, 0, 100);
-
-  Serial.print("Battery Voltage: ");
-  Serial.print(batteryVoltage);
-  Serial.println(" V");
-
-  Serial.print("Battery Percentage: ");
-  Serial.print(batteryPercentage);
-  Serial.println(" %");
+// Function to retrace the steps
+void retraceSteps() {
+  Serial.println("Battery low. Retracing steps...");
+  if (movementHistory.indexOf("move_forward") != -1) {
+    stopMotors();
+    delay(1000);
+    movementHistory = movementHistory.substring(0, movementHistory.lastIndexOf("move_forward"));
+  }
 }
 
-// Main setup function
+// Function to check if the robot is near charger using image recognition (camera)
+void checkForCharger() {
+  // Image recognition logic to locate charger with the word "charge" and a lightning bolt.
+}
+
+// Function to move the robot to a specific grid coordinate (x, y)
+void moveToCoordinate(int targetX, int targetY) {
+  Serial.print("Moving to coordinates: ");
+  Serial.print(targetX);
+  Serial.print(", ");
+  Serial.println(targetY);
+  
+  // Move in X direction
+  while (robotX < targetX) {
+    moveForward();
+    robotX++;
+  }
+  while (robotX > targetX) {
+    turnLeft();  // Assuming turns change direction in a 2D grid
+    moveForward();
+    robotX--;
+  }
+
+  // Move in Y direction
+  while (robotY < targetY) {
+    moveForward();
+    robotY++;
+  }
+  while (robotY > targetY) {
+    turnLeft();  // Assuming turns change direction in a 2D grid
+    moveForward();
+    robotY--;
+  }
+
+  stopMotors();
+  Serial.println("Arrived at target coordinates.");
+}
+
 void setup() {
-  // Set motor pins as outputs
+  Serial.begin(115200);
+  pinMode(RED_LED_PIN, OUTPUT);
+
   pinMode(LEFT_MOTOR_FWD, OUTPUT);
   pinMode(LEFT_MOTOR_BWD, OUTPUT);
   pinMode(RIGHT_MOTOR_FWD, OUTPUT);
   pinMode(RIGHT_MOTOR_BWD, OUTPUT);
 
-  // Set ultrasonic sensor pins
   pinMode(TRIG_PIN, OUTPUT);
   pinMode(ECHO_PIN, INPUT);
 
-  // Set battery pin as input
-  pinMode(BATTERY_PIN, INPUT);
-
-  // Attach servos
   baseServo.attach(BASE_SERVO_PIN);
   bottomServo.attach(BOTTOM_SERVO_PIN);
   middleServo.attach(MIDDLE_SERVO_PIN);
   clawServo.attach(CLAW_SERVO_PIN);
 
-  // Initialize servo positions
   resetArm();
 
-  // Start the serial monitor
-  Serial.begin(9600);
-  Serial.println("Robot starting...");
+  SerialBT.begin("ESP32_Robot");
+  Serial.println("Bluetooth Started");
 }
 
-// Main loop function
 void loop() {
-  // Get the distance from the ultrasonic sensor
-  long distance = getDistance();
+  batteryVoltage = readBattery();
+  Serial.println("Battery Voltage: " + String(batteryVoltage));
 
-  // Print the distance to the Serial Monitor
+  if (batteryVoltage < 3.0) {
+    retraceSteps();
+  }
+
+  // Check for trash items and move to their coordinates
+  for (int i = 0; i < sizeof(trashList) / sizeof(trashList[0]); i++) {
+    Trash trash = trashList[i];
+    moveToCoordinate(trash.x, trash.y);
+    
+    // Move arm to grab the trash (adjust these values for the arm)
+    moveArmTo(90, 45);
+    controlClaw(true);  // Grab trash
+    delay(1000);  // Simulate grabbing trash
+    
+    controlClaw(false);  // Release trash
+    resetArm();  // Reset arm to neutral position
+  }
+
+  long distance = getDistance();
   Serial.print("Distance: ");
   Serial.print(distance);
   Serial.println(" cm");
 
-  // Check for obstacles
-  if (distance < 20) { // If an obstacle is closer than 20 cm
-    Serial.println("Obstacle detected! Avoiding...");
+  if (distance < 20) {
     stopMotors();
     delay(500);
     turnLeft();
   } else {
-    moveForward(); // Otherwise, keep moving forward
+    moveForward();
   }
 
-  // Update and display battery status
-  updateBatteryPercentage();
+  checkForCharger(); // Check if charger is nearby
 
-  // Check for commands from the USB camera (via serial)
-  if (Serial.available() > 0) {
-    String data = Serial.readStringUntil('\n'); // Read coordinates
-    int commaIndex = data.indexOf(',');
-    int gridX = data.substring(0, commaIndex).toInt();
-    int gridY = data.substring(commaIndex + 1).toInt();
-
-    Serial.print("Received Grid: ");
-    Serial.print(gridX);
-    Serial.print(", ");
-    Serial.println(gridY);
-
-    // Map coordinates to servo angles
-    int baseAngle = map(gridX, 0, 10, 0, 180);    // Adjust based on grid size
-    int bottomAngle = map(gridY, 0, 10, 90, 45);  // Adjust based on height range
-
-    // Move the arm to the trash location
-    moveArmTo(baseAngle, bottomAngle);
-
-    // Grab the object
-    controlClaw(false);
-
-    // Reset arm after grabbing
-    resetArm();
-  }
-
-  delay(100); // Add a small delay to stabilize
+  delay(100);
 }
