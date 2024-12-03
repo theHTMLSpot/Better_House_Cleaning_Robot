@@ -3,6 +3,9 @@
 #include <Wire.h>
 #include <TFT_eSPI.h>
 #include <ESP32SPISlave.h>
+#include <FS.h>
+#include <SD.h>
+#include <SPI.h>
 
 // Define motor pins
 #define LEFT_MOTOR_FWD 9
@@ -151,42 +154,22 @@ void retraceSteps() {
   }
 }
 
-// Function to check if the robot is near charger using image recognition (camera)
-void checkForCharger() {
-  // Image recognition logic to locate charger with the word "charge" and a lightning bolt.
-}
-
-// Function to move the robot to a specific grid coordinate (x, y)
-void moveToCoordinate(int targetX, int targetY) {
-  Serial.print("Moving to coordinates: ");
-  Serial.print(targetX);
-  Serial.print(", ");
-  Serial.println(targetY);
+// Function to send image data to the server
+void sendImageToServer() {
+  // You can use a camera connected to the ESP32 or any other compatible camera.
+  // Here we are assuming that we have access to a camera frame (as a buffer or as a file).
   
-  // Move in X direction
-  while (robotX < targetX) {
-    moveForward();
-    robotX++;
+  // Example: Send a captured image to the server
+  File imgFile = SD.open("/capture.jpg");  // Or use a camera library to get the image
+  if (imgFile) {
+    while (imgFile.available()) {
+      SerialBT.write(imgFile.read());  // Send byte-by-byte over Bluetooth
+    }
+    imgFile.close();
+    Serial.println("Image sent to server.");
+  } else {
+    Serial.println("Error opening image file.");
   }
-  while (robotX > targetX) {
-    turnLeft();  // Assuming turns change direction in a 2D grid
-    moveForward();
-    robotX--;
-  }
-
-  // Move in Y direction
-  while (robotY < targetY) {
-    moveForward();
-    robotY++;
-  }
-  while (robotY > targetY) {
-    turnLeft();  // Assuming turns change direction in a 2D grid
-    moveForward();
-    robotY--;
-  }
-
-  stopMotors();
-  Serial.println("Arrived at target coordinates.");
 }
 
 void setup() {
@@ -210,6 +193,13 @@ void setup() {
 
   SerialBT.begin("ESP32_Robot");
   Serial.println("Bluetooth Started");
+
+  // Initialize SD card (if using one for storing images)
+  if (!SD.begin()) {
+    Serial.println("SD card initialization failed!");
+  } else {
+    Serial.println("SD card initialized.");
+  }
 }
 
 void loop() {
@@ -220,7 +210,10 @@ void loop() {
     retraceSteps();
   }
 
-  // Check for trash items and move to their coordinates
+  // Send image frame to server (every loop or on specific events like object detection)
+  sendImageToServer();  // Adjust timing for when you want to send images (e.g., periodically)
+
+  // Logic for movement and task execution
   for (int i = 0; i < sizeof(trashList) / sizeof(trashList[0]); i++) {
     Trash trash = trashList[i];
     moveToCoordinate(trash.x, trash.y);
@@ -246,8 +239,6 @@ void loop() {
   } else {
     moveForward();
   }
-
-  checkForCharger(); // Check if charger is nearby
 
   delay(100);
 }
