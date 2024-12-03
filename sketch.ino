@@ -16,11 +16,22 @@
 #define MIDDLE_SERVO_PIN 4
 #define CLAW_SERVO_PIN 2
 
+// Battery voltage pin
+#define BATTERY_PIN A0
+
 // Servo objects
 Servo baseServo;
 Servo bottomServo;
 Servo middleServo;
 Servo clawServo;
+
+// Variables for tracking steps
+long stepCount = 0;
+int motorSpeed = 150; // Default motor speed (0-255)
+
+// Variables for battery monitoring
+float batteryVoltage = 0;
+float batteryPercentage = 0;
 
 // Function to get distance from ultrasonic sensor
 long getDistance() {
@@ -38,28 +49,31 @@ long getDistance() {
 // Function to move the robot forward
 void moveForward() {
   Serial.println("Moving forward");
-  digitalWrite(LEFT_MOTOR_FWD, HIGH);
-  digitalWrite(LEFT_MOTOR_BWD, LOW);
-  digitalWrite(RIGHT_MOTOR_FWD, HIGH);
-  digitalWrite(RIGHT_MOTOR_BWD, LOW);
+  analogWrite(LEFT_MOTOR_FWD, motorSpeed);
+  analogWrite(LEFT_MOTOR_BWD, 0);
+  analogWrite(RIGHT_MOTOR_FWD, motorSpeed);
+  analogWrite(RIGHT_MOTOR_BWD, 0);
+
+  // Increment step count
+  stepCount++;
 }
 
 // Function to stop the robot
 void stopMotors() {
   Serial.println("Stopping");
-  digitalWrite(LEFT_MOTOR_FWD, LOW);
-  digitalWrite(LEFT_MOTOR_BWD, LOW);
-  digitalWrite(RIGHT_MOTOR_FWD, LOW);
-  digitalWrite(RIGHT_MOTOR_BWD, LOW);
+  analogWrite(LEFT_MOTOR_FWD, 0);
+  analogWrite(LEFT_MOTOR_BWD, 0);
+  analogWrite(RIGHT_MOTOR_FWD, 0);
+  analogWrite(RIGHT_MOTOR_BWD, 0);
 }
 
 // Function to turn the robot left
 void turnLeft() {
   Serial.println("Turning left");
-  digitalWrite(LEFT_MOTOR_FWD, LOW);
-  digitalWrite(LEFT_MOTOR_BWD, HIGH);
-  digitalWrite(RIGHT_MOTOR_FWD, HIGH);
-  digitalWrite(RIGHT_MOTOR_BWD, LOW);
+  analogWrite(LEFT_MOTOR_FWD, 0);
+  analogWrite(LEFT_MOTOR_BWD, motorSpeed);
+  analogWrite(RIGHT_MOTOR_FWD, motorSpeed);
+  analogWrite(RIGHT_MOTOR_BWD, 0);
   delay(500); // Adjust time for desired turn angle
 }
 
@@ -93,6 +107,24 @@ void resetArm() {
   delay(1000);
 }
 
+// Function to read battery percentage
+void updateBatteryPercentage() {
+  int sensorValue = analogRead(BATTERY_PIN);
+  batteryVoltage = sensorValue * (5.0 / 1023.0) * 2; // Adjust for voltage divider
+  batteryPercentage = map(batteryVoltage, 6.0, 8.4, 0, 100); // 2S LiPo range (6V-8.4V)
+
+  // Constrain to valid range
+  batteryPercentage = constrain(batteryPercentage, 0, 100);
+
+  Serial.print("Battery Voltage: ");
+  Serial.print(batteryVoltage);
+  Serial.println(" V");
+
+  Serial.print("Battery Percentage: ");
+  Serial.print(batteryPercentage);
+  Serial.println(" %");
+}
+
 // Main setup function
 void setup() {
   // Set motor pins as outputs
@@ -104,6 +136,9 @@ void setup() {
   // Set ultrasonic sensor pins
   pinMode(TRIG_PIN, OUTPUT);
   pinMode(ECHO_PIN, INPUT);
+
+  // Set battery pin as input
+  pinMode(BATTERY_PIN, INPUT);
 
   // Attach servos
   baseServo.attach(BASE_SERVO_PIN);
@@ -138,6 +173,9 @@ void loop() {
   } else {
     moveForward(); // Otherwise, keep moving forward
   }
+
+  // Update and display battery status
+  updateBatteryPercentage();
 
   // Check for commands from the USB camera (via serial)
   if (Serial.available() > 0) {
