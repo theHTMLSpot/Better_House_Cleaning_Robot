@@ -1,84 +1,79 @@
 import cv2
-import tensorflow as tf
 import numpy as np
-import serial
+import tensorflow as tf
+from bluetooth import BluetoothSocket, RFCOMM
 import time
 
-# Initialize Serial communication to ESP32 (assuming it's connected on COM port)
-ser = serial.Serial('COM3', 115200, timeout=1)
+# Load the pre-trained TensorFlow model (e.g., trained to detect trash and charger)
+model = tf.saved_model.load('your_model_path')
 
-# Load TensorFlow Lite model (assuming you have a trained model for trash detection and charger detection)
-interpreter_trash = tf.lite.Interpreter(model_path="trash_model.tflite")
-interpreter_charger = tf.lite.Interpreter(model_path="charger_model.tflite")
+# Bluetooth server setup
+server_socket = BluetoothSocket(RFCOMM)
+server_socket.bind(("", 1))
+server_socket.listen(1)
 
-# Initialize the camera (ESP32-CAM or USB camera)
-cap = cv2.VideoCapture(0)
+print("Waiting for connection...")
+client_socket, client_address = server_socket.accept()
+print("Connected to", client_address)
 
-# Function to process the image through the model
-def process_image_for_detection(frame, interpreter):
-    # Preprocess the frame to fit the model input shape (depends on your model)
-    input_tensor = cv2.resize(frame, (224, 224))  # Resize to model input size
-    input_tensor = np.expand_dims(input_tensor, axis=0)  # Add batch dimension
-    input_tensor = np.array(input_tensor, dtype=np.float32)  # Convert to float32
+# Function to process the image and classify the object (trash or charger)
+def classify_image(frame):
+    # Preprocess the frame to be compatible with the model
+    image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  # Convert to RGB
+    image = cv2.resize(image, (224, 224))  # Resize for the model input
+    image = np.expand_dims(image, axis=0)  # Add batch dimension
+    image = tf.convert_to_tensor(image, dtype=tf.float32)  # Convert to tensor
 
     # Run inference
-    interpreter.allocate_tensors()
-    input_details = interpreter.get_input_details()
-    output_details = interpreter.get_output_details()
+    predictions = model(image)
+    predicted_class = np.argmax(predictions, axis=1)
 
-    interpreter.set_tensor(input_details[0]['index'], input_tensor)
-    interpreter.invoke()
+    # 0: Trash, 1: Charger
+    if predicted_class == 0:
+        return "trash"
+    elif predicted_class == 1:
+        return "charger"
+    else:
+        return "unknown"
 
-    # Get output
-    output_data = interpreter.get_tensor(output_details[0]['index'])
-    return output_data
-
-# Function to detect trash
-def detect_trash(frame):
-    output_data = process_image_for_detection(frame, interpreter_trash)
-    return output_data  # Assuming output is a probability or classification
-
-# Function to detect charger
-def detect_charger(frame):
-    output_data = process_image_for_detection(frame, interpreter_charger)
-    return output_data  # Assuming output is a probability or classification
-
-# Function to communicate movement command to ESP32
+# Function to send movement commands to the ESP32 (based on AI's decision)
 def send_command_to_esp32(command):
-    ser.write(command.encode())
+    client_socket.send(command.encode('utf-8'))
+    print(f"Sent command: {command}")
 
-# Function to move the robot to a specific (x, y) coordinate
-def move_robot_to_coordinates(x, y):
-    command = f"move_to_{x}_{y}\n"
-    send_command_to_esp32(command)
-
-# Main loop for continuous detection
+# Main loop
 while True:
-    ret, frame = cap.read()
-    if not ret:
-        break
+    # Receive frame from ESP32 (via Bluetooth)
+    frame_size = client_socket.recv(4)  # Receive frame size (first 4 bytes)
+    frame_size = int.from_bytes(frame_size, byteorder='little')  # Convert to integer
+    frame_data = b""
+    
+    # Receive the actual frame data
+    while len(frame_data) < frame_size:
+        frame_data += client_socket.recv(1024)
 
-    # Show the current frame for debugging
-    cv2.imshow('Frame', frame)
+    # Convert the frame data back to an image
+    frame = np.frombuffer(frame_data, dtype=np.uint8)
+    frame = cv2.imdecode(frame, cv2.IMREAD_COLOR)  # Decode the image
 
-    # Detect Trash
-    trash_output = detect_trash(frame)
-    if trash_output[0] > 0.5:  # Example threshold for detecting trash
-        print("Trash detected!")
-        trash_coords = (1, 2)  # Example: coordinates for detected trash
-        move_robot_to_coordinates(trash_coords[0], trash_coords[1])
+    if frame is not None:
+        # Classify the image (whether it's trash or charger)
+        detected_object = classify_image(frame)
+        print(f"Detected object: {detected_object}")
 
-    # Detect Charger
-    charger_output = detect_charger(frame)
-    if charger_output[0] > 0.5:  # Example threshold for detecting charger
-        print("Charger detected!")
-        charger_coords = (0, 0)  # Example: coordinates for charger (start position or charging station)
-        move_robot_to_coordinates(charger_coords[0], charger_coords[1])
+        if detected_object == "trash":
+            # Send command to move the arm to pick up trash
+            send_command_to_esp32("move_arm_to_trash")
+            # Optionally: send specific coordinates if needed
+        elif detected_object == "charger":
+            # Send command to move the robot to the charger
+            send_command_to_esp32("move_to_charger")
+        else:
+            print("No recognizable object detected.")
 
-    # Check if 'q' is pressed to quit the loop
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        break
+    # Add a delay if necessary (e.g., to avoid sending too many commands too fast)
+    time.sleep(0.5)
 
-# Release the camera and close windows
-cap.release()
-cv2.destroyAllWindows()
+# Close the Bluetooth connection
+client_socket.close()
+server_socket.close()
